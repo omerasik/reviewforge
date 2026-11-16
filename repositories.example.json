@@ -1,0 +1,8 @@
+{
+  "example/project": {
+    "maxFiles": 20,
+    "largeChange": 400,
+    "criticalPrefixes": [".github/workflows/", "infra/"],
+    "excludeModelPrefixes": ["config/", ".github/", "fixtures/"]
+  }
+}
