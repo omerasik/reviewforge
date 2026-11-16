@@ -38,6 +38,7 @@ const app = service({
   webhookSecret: config.WEBHOOK_SECRET,
   operatorToken: config.OPERATOR_TOKEN,
   repos,
+  staticDir: "web/dist",
   store,
   github: new GitHub(config.GITHUB_TOKEN),
   advise: config.MODEL_API_KEY && config.MODEL_NAME ? modelAdvisor({

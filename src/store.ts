@@ -5,12 +5,18 @@ import { DatabaseSync } from "node:sqlite";
 import { AppError } from "./domain.js";
 import type { Draft, Pull, Review } from "./domain.js";
 
-type Row = Omit<Review, "draft"> & { draft: string | null };
+type Row = Omit<Review, "draft" | "history" | "analyzing"> & {
+  draft: string | null; history: string; analysis_until: number;
+};
 
 function readable(row: unknown): Review {
-  const view = row as Row;
-  return { ...view, draft: view.draft ? JSON.parse(view.draft) as Draft : null };
+  const { analysis_until, draft, history, ...view } = row as Row;
+  return { ...view, analyzing: analysis_until > Date.now(),
+    draft: draft ? JSON.parse(draft) as Draft : null, history: JSON.parse(history) as Review["history"] };
 }
+
+const fields = "id, repo, number, sha, status, draft, external_id, created_at, approved_at, analysis_until, analysis_error, history";
+const history = "json_insert(CASE WHEN json_array_length(history) >= 100 THEN json_remove(history, '$[0]') ELSE history END, '$[#]', json_object('event', ?, 'at', ?))";
 
 export class Store {
   private readonly db: DatabaseSync;
@@ -41,6 +47,19 @@ export class Store {
         review_id TEXT NOT NULL REFERENCES reviews (id)
       );
     `);
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const columns = new Set(this.db.prepare("PRAGMA table_info(reviews)").all().map(column => column.name));
+      if (!columns.has("analysis_token")) this.db.exec("ALTER TABLE reviews ADD COLUMN analysis_token TEXT");
+      if (!columns.has("analysis_until")) this.db.exec("ALTER TABLE reviews ADD COLUMN analysis_until INTEGER NOT NULL DEFAULT 0");
+      if (!columns.has("analysis_error")) this.db.exec("ALTER TABLE reviews ADD COLUMN analysis_error TEXT");
+      if (!columns.has("history")) this.db.exec("ALTER TABLE reviews ADD COLUMN history TEXT NOT NULL DEFAULT '[]'");
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      this.db.close();
+      throw error;
+    }
   }
 
   enqueue(id: string, hash: string, pull: Pull) {
@@ -54,10 +73,10 @@ export class Store {
       }
 
       const inserted = this.db.prepare(`
-        INSERT INTO reviews (id, repo, number, sha, status, created_at)
-        VALUES (?, ?, ?, ?, 'queued', ?)
+        INSERT INTO reviews (id, repo, number, sha, status, created_at, history)
+        VALUES (?, ?, ?, ?, 'queued', ?, json_array(json_object('event', 'Webhook accepted', 'at', ?)))
         ON CONFLICT (repo, number, sha) DO NOTHING RETURNING id
-      `).get(randomUUID(), pull.repo, pull.number, pull.sha, new Date().toISOString());
+      `).get(randomUUID(), pull.repo, pull.number, pull.sha, new Date().toISOString(), new Date().toISOString());
       const existing = inserted ?? this.db.prepare("SELECT id FROM reviews WHERE repo = ? AND number = ? AND sha = ?")
         .get(pull.repo, pull.number, pull.sha);
       if (typeof existing?.id !== "string") throw new Error("review_insert_failed");
@@ -71,41 +90,64 @@ export class Store {
   }
 
   get(id: string): Review {
-    const row = this.db.prepare("SELECT * FROM reviews WHERE id = ?").get(id);
+    const row = this.db.prepare(`SELECT ${fields} FROM reviews WHERE id = ?`).get(id);
     if (!row) throw new AppError(404, "review_not_found");
     return readable(row);
   }
 
   list(): Review[] {
-    return this.db.prepare("SELECT * FROM reviews ORDER BY created_at DESC, id DESC LIMIT 100").all().map(readable);
+    return this.db.prepare(`SELECT ${fields} FROM reviews ORDER BY created_at DESC, id DESC LIMIT 100`).all().map(readable);
   }
 
-  saveDraft(id: string, draft: Draft) {
-    this.db.prepare("UPDATE reviews SET draft = ?, status = 'ready' WHERE id = ? AND status = 'queued'")
-      .run(JSON.stringify(draft), id);
+  claimAnalysis(id: string) {
+    const token = randomUUID();
+    const now = Date.now();
+    const updated = this.db.prepare(`
+      UPDATE reviews SET analysis_token = ?, analysis_until = ?, analysis_error = NULL, history = ${history}
+      WHERE id = ? AND status = 'queued' AND analysis_until <= ?
+    `).run(token, now + 45_000, "Analysis started", new Date(now).toISOString(), id, now);
+    if (!updated.changes) throw new AppError(409, "analysis_in_progress");
+    return token;
+  }
+
+  saveDraft(id: string, token: string, draft: Draft) {
+    const updated = this.db.prepare(`
+      UPDATE reviews SET draft = ?, status = 'ready', analysis_token = NULL, analysis_until = 0, history = ${history}
+      WHERE id = ? AND status = 'queued' AND analysis_token = ? AND analysis_until > ?
+    `).run(JSON.stringify(draft), "Draft ready", new Date().toISOString(), id, token, Date.now());
+    if (!updated.changes) throw new AppError(409, "analysis_lease_expired");
     return this.get(id);
   }
 
+  failAnalysis(id: string, token: string, code: string) {
+    this.db.prepare(`
+      UPDATE reviews SET analysis_token = NULL, analysis_until = 0, analysis_error = ?, history = ${history}
+      WHERE id = ? AND status = 'queued' AND analysis_token = ?
+    `).run(code, "Analysis failed", new Date().toISOString(), id, token);
+  }
+
   claimPublication(id: string) {
+    const now = new Date().toISOString();
     return Boolean(this.db.prepare(`
-      UPDATE reviews SET status = 'publishing', approved_at = ?
+      UPDATE reviews SET status = 'publishing', approved_at = ?, history = ${history}
       WHERE id = ? AND status = 'ready'
-    `).run(new Date().toISOString(), id).changes);
+    `).run(now, "Publication approved", now, id).changes);
   }
 
   finish(id: string, externalId: number) {
     this.db.prepare(`
-      UPDATE reviews SET status = 'published', external_id = ?
+      UPDATE reviews SET status = 'published', external_id = ?, history = ${history}
       WHERE id = ? AND status IN ('publishing', 'uncertain')
-    `).run(externalId, id);
+    `).run(externalId, "Publication confirmed", new Date().toISOString(), id);
     return this.get(id);
   }
 
   markProblem(id: string, uncertain: boolean) {
     this.db.prepare(`
-      UPDATE reviews SET status = ?, approved_at = CASE WHEN ? = 1 THEN approved_at ELSE NULL END
+      UPDATE reviews SET status = ?, approved_at = CASE WHEN ? = 1 THEN approved_at ELSE NULL END, history = ${history}
       WHERE id = ? AND status = 'publishing'
-    `).run(uncertain ? "uncertain" : "ready", Number(uncertain), id);
+    `).run(uncertain ? "uncertain" : "ready", Number(uncertain),
+      uncertain ? "Publication unconfirmed" : "Publication rejected", new Date().toISOString(), id);
   }
 
   close() {

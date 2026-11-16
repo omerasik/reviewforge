@@ -36,7 +36,9 @@ export const checkSchema = z.object({
 export const suggested = z.object({
   file: z.string().max(1000),
   severity: z.enum(["low", "medium", "high"]),
-  message: z.string().trim().min(1).max(320)
+  message: z.string().trim().min(1).max(320),
+  line: z.number().int().positive().optional(),
+  evidence: z.string().trim().min(1).max(250).optional()
 }).strict();
 
 export type Rules = z.infer<typeof rulesSchema>[string];
@@ -62,6 +64,9 @@ export type Review = Pull & {
   external_id: number | null;
   created_at: string;
   approved_at: string | null;
+  analyzing: boolean;
+  analysis_error: string | null;
+  history: { event: string; at: string }[];
 };
 
 export class AppError extends Error {
