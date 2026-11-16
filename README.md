@@ -1,6 +1,6 @@
 # ReviewForge
 
-ReviewForge drafts pull request reviews from changed-file metadata, repository rules and GitHub check runs. An operator can inspect the draft and explicitly approve a comment on the exact commit reviewed. The project exposes a REST API and a reproducible synthetic demo.
+ReviewForge drafts pull request reviews from changed files, repository rules and GitHub checks. The React dashboard shows draft evidence and review history. An operator can approve publication for the exact commit reviewed.
 
 ## Quick start
 
@@ -10,9 +10,13 @@ Use Node.js 22.14+ and npm.
 npm ci
 npm run demo
 npm run demo -- --approve
+npm run build
+npm run demo -- --serve
 ```
 
 The demo starts a local HTTP service, submits a signed synthetic PR event, prepares a review and prints it as JSON. With `--approve`, it also tests the publication contract using mocked GitHub responses. No real GitHub repository or AI account is required for either demo.
+
+The `--serve` demo prints a loopback URL and synthetic operator token. Open the URL, connect, select the fixture pull request and choose **Analyze pull request**. Inspect policy findings, check results and model evidence. **Approve review** opens a confirmation for the reviewed commit. Publication goes to the synthetic fixture during this demo.
 
 ## Connect a repository
 
@@ -30,7 +34,8 @@ The default listener binds to `127.0.0.1:3040` and stores the review ledger unde
 | Route | Use |
 | --- | --- |
 | POST `/webhooks/github` | Verify GitHub's signature and enqueue or deduplicate a PR head. |
-| GET `/api/reviews` | List up to 100 recent reviews. |
+| GET `/api/reviews` | List up to 100 recent reviews for configured repositories. |
+| GET `/api/repositories` | Read repository review policies. |
 | GET `/api/reviews/{id}` | Inspect the draft, check results and publication status. |
 | POST `/api/reviews/{id}/analyze` | Retrieve changed files and GitHub Checks, then store the draft. |
 | POST `/api/reviews/{id}/publish` | Provide `{"approve":true,"sha":"<reviewed commit SHA>"}` to publish a COMMENT review. |
@@ -50,6 +55,6 @@ npm run build
 npm audit --audit-level=moderate
 ```
 
-HTTP integration tests mock GitHub. They cover signatures, authorization, duplicate delivery and head detection, rate limiting, stale heads, concurrent approval, and recovery after a dropped publication response. The hosted GitHub webhook and paid model are opt-in integrations. This version uses one operator role, one database and bounded review reconciliation. A reconciliation result may require inspection in GitHub on very large PR histories. The built-in SQLite module is experimental in Node.js 22.14.
+HTTP integration tests use a GitHub fixture. They cover signatures, authorization, delivery deduplication, rate limits, stale heads, concurrent analysis and approval, and recovery after a dropped publication response. The model adapter checks structured findings against the examined line in the bounded diff. A synthetic case checks the filter using one correct and two unsupported suggestions. It measures evidence-filter behavior with a mocked model. This version uses one operator role, a SQLite ledger and operator-triggered analysis. The hosted webhook, real review publication and paid model require authorized configurations.
 
 Original work includes the signed delivery ledger, repo-level policy, evidence and proposal format, commit-scoped approval and publication recovery. [Third-party notices](THIRD_PARTY_NOTICES.md) · [MIT license](LICENSE).
