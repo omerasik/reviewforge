@@ -24,3 +24,14 @@ jobs:
       - run: npm run build
       - run: npm run demo -- --approve
       - run: npm audit --audit-level=moderate
+      - run: docker build -t reviewforge-ci .
+      - run: >-
+          docker run -d --name reviewforge-ci -p 127.0.0.1:13040:3040
+          -e WEBHOOK_SECRET=reviewforge-ci-webhook-credential-only
+          -e OPERATOR_TOKEN=reviewforge-ci-operator-credential-only
+          -e GITHUB_TOKEN=ci-unused-placeholder -e AUTO_ANALYZE=false reviewforge-ci
+      - run: node scripts/container-smoke.mjs
+      - if: failure()
+        run: docker logs reviewforge-ci
+      - if: always()
+        run: docker rm -f reviewforge-ci || true

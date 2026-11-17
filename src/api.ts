@@ -1,12 +1,15 @@
 import { createHash, createHmac } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { IncomingMessage } from "node:http";
+import { join } from "node:path";
 import { z } from "zod";
+import { analyze } from "./analysis.js";
 import { AppError, head, webhook } from "./domain.js";
 import type { Review, Rules } from "./domain.js";
 import { GitHub, GitHubError } from "./github.js";
 import { rawBody, secureMatch, value } from "./io.js";
-import { ensureCurrent, marker, prepare, render } from "./review.js";
+import { ensureCurrent, marker, render } from "./review.js";
 import type { Advises } from "./review.js";
 import type { Store } from "./store.js";
 
@@ -17,6 +20,7 @@ type Setup = {
   store: Store;
   github: GitHub;
   advise?: Advises;
+  staticDir?: string;
 };
 
 const approval = z.object({ approve: z.literal(true), sha: head }).strict();
@@ -76,7 +80,10 @@ export function service(config: Setup) {
     if (!secureMatch(header(request, "authorization"), "Bearer " + config.operatorToken)) {
       throw new AppError(401, "operator_required");
     }
-    if (method === "GET" && path === "/api/reviews") return { status: 200, body: store.list() };
+    if (method === "GET" && path === "/api/reviews") {
+      return { status: 200, body: store.list().filter(review => Object.hasOwn(config.repos, review.repo)) };
+    }
+    if (method === "GET" && path === "/api/repositories") return { status: 200, body: Object.entries(config.repos) };
 
     const match = /^\/api\/reviews\/([^/]+)(?:\/(analyze|publish|reconcile))?$/.exec(path);
     const id = z.uuid().safeParse(match?.[1]);
@@ -88,9 +95,7 @@ export function service(config: Setup) {
 
     if (method === "GET" && !operation) return { status: 200, body: review };
     if (method === "POST" && operation === "analyze") {
-      const result = review.status === "queued" ? store.saveDraft(review.id,
-        await prepare(github, review, rules, config.advise)) : review;
-      return { status: 200, body: result };
+      return { status: 200, body: await analyze(config, review, rules) };
     }
     if (method === "POST" && operation === "publish") return { status: 200, body: await publish(review, request) };
     if (method === "POST" && operation === "reconcile") {
@@ -105,6 +110,16 @@ export function service(config: Setup) {
   return createServer({ requestTimeout: 25_000, headersTimeout: 8_000 }, async (request, response) => {
     const headers = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" };
     try {
+      const path = new URL(request.url ?? "/", "http://localhost").pathname;
+      if (config.staticDir && request.method === "GET" && (path === "/" || /^\/assets\/[a-zA-Z0-9_-]+\.(js|css)$/.test(path))) {
+        const file = path === "/" ? "index.html" : path.slice(1);
+        const content = await readFile(join(config.staticDir, file)).catch(() => undefined);
+        if (!content) throw new AppError(404, "dashboard_build_missing");
+        const mime = file.endsWith(".js") ? "text/javascript" : file.endsWith(".css") ? "text/css" : "text/html";
+        response.writeHead(200, { ...headers, "Content-Type": mime + "; charset=utf-8",
+          "Content-Security-Policy": "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'" }).end(content);
+        return;
+      }
       const result = await route(request);
       response.writeHead(result.status, headers).end(JSON.stringify(result.body));
     } catch (reason) {

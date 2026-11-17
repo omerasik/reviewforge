@@ -1,6 +1,8 @@
 # ReviewForge
 
-ReviewForge drafts pull request reviews from changed-file metadata, repository rules and GitHub check runs. An operator can inspect the draft and explicitly approve a comment on the exact commit reviewed. The project exposes a REST API and a reproducible synthetic demo.
+ReviewForge drafts pull request reviews from changed files, repository rules and GitHub checks. The React dashboard shows draft evidence and review history. An operator can approve publication for the exact commit reviewed.
+
+![Review dashboard after explicitly approved synthetic publication](docs/dashboard.png)
 
 ## Quick start
 
@@ -10,9 +12,13 @@ Use Node.js 22.14+ and npm.
 npm ci
 npm run demo
 npm run demo -- --approve
+npm run build
+npm run demo -- --serve
 ```
 
 The demo starts a local HTTP service, submits a signed synthetic PR event, prepares a review and prints it as JSON. With `--approve`, it also tests the publication contract using mocked GitHub responses. No real GitHub repository or AI account is required for either demo.
+
+The `--serve` demo prints a loopback URL and synthetic operator token. Open the URL, connect, select the fixture pull request and choose **Analyze pull request**. Inspect policy findings, check results and model evidence. **Approve review** opens a confirmation for the reviewed commit. Publication goes to the synthetic fixture during this demo.
 
 ## Connect a repository
 
@@ -25,12 +31,17 @@ npm start
 
 The default listener binds to `127.0.0.1:3040` and stores the review ledger under `data/`. Set `REPOSITORIES_FILE` to use a custom config and keep the webhook, operator and GitHub credentials distinct. Turn on model suggestions explicitly with `MODEL_API_KEY`, `MODEL_NAME` and an optional HTTPS `MODEL_ENDPOINT`. An opt-in model receives bounded diffs from configured paths. Project defaults make no model calls.
 
+The deployed server analyzes queued pull requests automatically. SQLite stores the lease, attempt count and next eligible time. Transient GitHub errors use bounded exponential backoff and respect `Retry-After`. After three automatic attempts, an operator can retry from the dashboard when eligible. Set `AUTO_ANALYZE=false` for operator-triggered analysis.
+
+For a read-only integration check against your authorized test repository, set a restricted `GITHUB_TOKEN` and run `npm run verify:github -- --repo owner/repository --pr 123`. `--git-credentials` optionally uses existing Git authentication in memory. This command blocks HTTP writes, makes no model calls, and prints counts and the examined SHA without diffs or credentials. It requires an open PR. Live publication still requires explicit approval through the application.
+
 ## REST operations
 
 | Route | Use |
 | --- | --- |
 | POST `/webhooks/github` | Verify GitHub's signature and enqueue or deduplicate a PR head. |
-| GET `/api/reviews` | List up to 100 recent reviews. |
+| GET `/api/reviews` | List up to 100 recent reviews for configured repositories. |
+| GET `/api/repositories` | Read repository review policies. |
 | GET `/api/reviews/{id}` | Inspect the draft, check results and publication status. |
 | POST `/api/reviews/{id}/analyze` | Retrieve changed files and GitHub Checks, then store the draft. |
 | POST `/api/reviews/{id}/publish` | Provide `{"approve":true,"sha":"<reviewed commit SHA>"}` to publish a COMMENT review. |
@@ -50,6 +61,8 @@ npm run build
 npm audit --audit-level=moderate
 ```
 
-HTTP integration tests mock GitHub. They cover signatures, authorization, duplicate delivery and head detection, rate limiting, stale heads, concurrent approval, and recovery after a dropped publication response. The hosted GitHub webhook and paid model are opt-in integrations. This version uses one operator role, one database and bounded review reconciliation. A reconciliation result may require inspection in GitHub on very large PR histories. The built-in SQLite module is experimental in Node.js 22.14.
+HTTP integration tests use a GitHub fixture. They cover signatures, authorization, delivery deduplication, automatic analysis and rate-limit recovery, stale heads, concurrent analysis and approval, and recovery after a dropped publication response. Database reopen tests verify lease fencing and interrupted publication recovery. Model findings require a matching line and evidence in the examined diff. Secret-file exclusions inspect both current and previous paths for renames. Failed GitHub checks raise risk to high; absent or pending check evidence raises it to at least medium. Policy findings, check results and model suggestions stay separate in the draft.
+
+Frontend builds use esbuild; Oxlint and strict TypeScript checks run separately. This removes the unpatched picomatch dependency chain from development tooling. CI also builds and starts the container with unused mock integration credentials, checks the dashboard assets, CSP and authorization, and makes no external GitHub writes. This version uses one operator role and a SQLite ledger. The hosted webhook, real review publication and paid model require authorized configurations.
 
 Original work includes the signed delivery ledger, repo-level policy, evidence and proposal format, commit-scoped approval and publication recovery. [Third-party notices](THIRD_PARTY_NOTICES.md) · [MIT license](LICENSE).

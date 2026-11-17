@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
+import { startAnalysisWorker } from "./analysis.js";
 import { service } from "./api.js";
 import { rulesSchema } from "./domain.js";
 import { GitHub } from "./github.js";
@@ -14,6 +15,7 @@ const env = z.object({
   WEBHOOK_SECRET: z.string().min(32),
   OPERATOR_TOKEN: z.string().min(32),
   GITHUB_TOKEN: z.string().min(1),
+  AUTO_ANALYZE: z.enum(["true", "false"]).default("true"),
   MODEL_API_KEY: z.string().min(1).optional(),
   MODEL_NAME: z.string().min(1).optional(),
   MODEL_ENDPOINT: z.url().default("https://api.openai.com/v1/chat/completions")
@@ -34,17 +36,23 @@ if (config.MODEL_API_KEY && (endpoint.protocol !== "https:" || endpoint.username
 const settings = rulesSchema.parse(JSON.parse(readFileSync(config.REPOSITORIES_FILE, "utf8")));
 const repos = Object.fromEntries(Object.entries(settings).map(([repo, rules]) => [repo.toLowerCase(), rules]));
 const store = new Store(config.DATABASE_PATH);
-const app = service({
+const setup = {
   webhookSecret: config.WEBHOOK_SECRET,
   operatorToken: config.OPERATOR_TOKEN,
   repos,
+  staticDir: "web/dist",
   store,
   github: new GitHub(config.GITHUB_TOKEN),
   advise: config.MODEL_API_KEY && config.MODEL_NAME ? modelAdvisor({
     key: config.MODEL_API_KEY, model: config.MODEL_NAME, endpoint: endpoint.href
   }) : undefined
-});
+};
+const app = service(setup);
+const stopWorker = config.AUTO_ANALYZE === "true" ? startAnalysisWorker(setup) : undefined;
 app.listen(config.PORT, config.HOST, () => console.log(JSON.stringify({ event: "listening", host: config.HOST, port: config.PORT })));
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.once(signal, () => app.close(() => store.close()));
+  process.once(signal, () => {
+    const drained = stopWorker?.();
+    app.close(() => { void Promise.resolve(drained).then(() => store.close()); });
+  });
 }

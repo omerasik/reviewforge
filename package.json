@@ -10,25 +10,24 @@
     "dev": "node --env-file-if-exists=.env --import tsx src/main.ts",
     "start": "node --env-file-if-exists=.env dist/main.js",
     "test": "tsx --test tests/*.test.ts",
-    "typecheck": "tsc --noEmit",
-    "build": "tsc -p tsconfig.build.json",
-    "lint": "eslint .",
-    "demo": "tsx scripts/demo.ts"
+    "typecheck": "tsc --noEmit && tsc -p web/tsconfig.json",
+    "build": "tsc -p tsconfig.build.json && node web/build.mjs",
+    "lint": "oxlint --deny-warnings .",
+    "demo": "tsx scripts/demo.ts",
+    "verify:github": "tsx scripts/verify-github.ts"
   },
   "dependencies": {
     "zod": "4.6.7"
   },
-  "overrides": {
-    "@typescript-eslint/typescript-estree": {
-      "minimatch": "11.0.8"
-    }
-  },
   "devDependencies": {
-    "@eslint/js": "10.0.1",
     "@types/node": "22.20.5",
-    "eslint": "10.15.0",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "esbuild": "0.28.1",
+    "oxlint": "1.94.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
     "tsx": "4.23.15",
-    "typescript": "6.0.3",
-    "typescript-eslint": "8.72.2"
+    "typescript": "6.0.3"
   }
 }
