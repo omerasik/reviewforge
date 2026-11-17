@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import type { Review, Rules } from "../../src/domain.js";
@@ -10,12 +10,13 @@ const states: Record<Review["status"], string> = {
 };
 const time = new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" });
 
-async function api<T>(route: string, token: string, action?: object | null): Promise<T> {
+async function api<T>(route: string, token: string, action?: object | null, cancel?: AbortSignal): Promise<T> {
+  const deadline = AbortSignal.timeout(45_000);
   const response = await fetch("/api/" + route, {
     method: action === undefined ? "GET" : "POST",
     headers: { Authorization: "Bearer " + token, ...(action ? { "Content-Type": "application/json" } : {}) },
     body: action ? JSON.stringify(action) : undefined,
-    signal: AbortSignal.timeout(45_000)
+    signal: cancel ? AbortSignal.any([cancel, deadline]) : deadline
   });
   const body = await response.json();
   if (response.ok) return body as T;
@@ -60,6 +61,25 @@ function App() {
   const list = repository ? reviews.filter(review => review.repo === repository) : reviews;
   const current = list.find(review => review.id === selected) ?? list[0];
   const policy = repositories.find(([name]) => name === repository)?.[1];
+
+  useEffect(() => {
+    if (!token || busy) return;
+    const controller = new AbortController();
+    let waiting = false;
+    const timer = setInterval(async () => {
+      if (waiting) return;
+      waiting = true;
+      try {
+        const list = await api<Review[]>("reviews", token, undefined, controller.signal);
+        if (!controller.signal.aborted) setReviews(list);
+      } catch {
+        return;
+      } finally {
+        waiting = false;
+      }
+    }, 3000);
+    return () => { clearInterval(timer); controller.abort(); };
+  }, [token, busy]);
 
   async function refresh(value: string) {
     const [list, repos] = await Promise.all([
@@ -122,7 +142,8 @@ function App() {
         <div className="detail-heading"><div><h2>{current.repo} #{current.number}</h2>
           <code className="sha">{current.sha}</code></div><Status review={current} /></div>
         {current.analysis_error && <p className="error">Last analysis failed · {current.analysis_error.replaceAll("_", " ")}</p>}
-        {current.status === "queued" && <button className="primary" disabled={!!busy || current.analyzing}
+        {current.next_analysis_at && <p>Retry eligible at {time.format(new Date(current.next_analysis_at))}</p>}
+        {current.status === "queued" && <button className="primary" disabled={!!busy || current.analyzing || !!current.next_analysis_at}
           onClick={() => change("analyze", current)}>{current.analysis_error ? "Retry analysis" : "Analyze pull request"}</button>}
         {current.draft && <Findings draft={current.draft} />}
         {current.status === "ready" && (approval === current.id ?

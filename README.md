@@ -29,6 +29,8 @@ npm start
 
 The default listener binds to `127.0.0.1:3040` and stores the review ledger under `data/`. Set `REPOSITORIES_FILE` to use a custom config and keep the webhook, operator and GitHub credentials distinct. Turn on model suggestions explicitly with `MODEL_API_KEY`, `MODEL_NAME` and an optional HTTPS `MODEL_ENDPOINT`. An opt-in model receives bounded diffs from configured paths. Project defaults make no model calls.
 
+The deployed server analyzes queued pull requests automatically. SQLite stores the lease, attempt count and next eligible time. Transient GitHub errors use bounded exponential backoff and respect `Retry-After`. After three automatic attempts, an operator can retry from the dashboard when eligible. Set `AUTO_ANALYZE=false` for operator-triggered analysis.
+
 ## REST operations
 
 | Route | Use |
@@ -55,6 +57,6 @@ npm run build
 npm audit --audit-level=moderate
 ```
 
-HTTP integration tests use a GitHub fixture. They cover signatures, authorization, delivery deduplication, rate limits, stale heads, concurrent analysis and approval, and recovery after a dropped publication response. The model adapter checks structured findings against the examined line in the bounded diff. A synthetic case checks the filter using one correct and two unsupported suggestions. It measures evidence-filter behavior with a mocked model. This version uses one operator role, a SQLite ledger and operator-triggered analysis. The hosted webhook, real review publication and paid model require authorized configurations.
+HTTP integration tests use a GitHub fixture. They cover signatures, authorization, delivery deduplication, automatic analysis and rate-limit recovery, stale heads, concurrent analysis and approval, and recovery after a dropped publication response. The model adapter checks structured findings against the examined line in the bounded diff. A synthetic case checks the filter using one correct and two unsupported suggestions. It measures evidence-filter behavior with a mocked model. This version uses one operator role and a SQLite ledger. The hosted webhook, real review publication and paid model require authorized configurations.
 
 Original work includes the signed delivery ledger, repo-level policy, evidence and proposal format, commit-scoped approval and publication recovery. [Third-party notices](THIRD_PARTY_NOTICES.md) · [MIT license](LICENSE).

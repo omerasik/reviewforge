@@ -5,18 +5,20 @@ import { DatabaseSync } from "node:sqlite";
 import { AppError } from "./domain.js";
 import type { Draft, Pull, Review } from "./domain.js";
 
-type Row = Omit<Review, "draft" | "history" | "analyzing"> & {
-  draft: string | null; history: string; analysis_until: number;
+type Row = Omit<Review, "draft" | "history" | "analyzing" | "next_analysis_at"> & {
+  draft: string | null; history: string; analysis_until: number; analysis_due: number;
 };
 
 function readable(row: unknown): Review {
-  const { analysis_until, draft, history, ...view } = row as Row;
+  const { analysis_until, analysis_due, draft, history, ...view } = row as Row;
   return { ...view, analyzing: analysis_until > Date.now(),
+    next_analysis_at: analysis_due > Date.now() ? new Date(analysis_due).toISOString() : null,
     draft: draft ? JSON.parse(draft) as Draft : null, history: JSON.parse(history) as Review["history"] };
 }
 
-const fields = "id, repo, number, sha, status, draft, external_id, created_at, approved_at, analysis_until, analysis_error, history";
+const fields = "id, repo, number, sha, status, draft, external_id, created_at, approved_at, analysis_until, analysis_error, history, analysis_attempts, analysis_due";
 const history = "json_insert(CASE WHEN json_array_length(history) >= 100 THEN json_remove(history, '$[0]') ELSE history END, '$[#]', json_object('event', ?, 'at', ?))";
+export const maxAutoAttempts = 3;
 
 export class Store {
   private readonly db: DatabaseSync;
@@ -53,7 +55,10 @@ export class Store {
       if (!columns.has("analysis_token")) this.db.exec("ALTER TABLE reviews ADD COLUMN analysis_token TEXT");
       if (!columns.has("analysis_until")) this.db.exec("ALTER TABLE reviews ADD COLUMN analysis_until INTEGER NOT NULL DEFAULT 0");
       if (!columns.has("analysis_error")) this.db.exec("ALTER TABLE reviews ADD COLUMN analysis_error TEXT");
+      if (!columns.has("analysis_attempts")) this.db.exec("ALTER TABLE reviews ADD COLUMN analysis_attempts INTEGER NOT NULL DEFAULT 0");
+      if (!columns.has("analysis_due")) this.db.exec("ALTER TABLE reviews ADD COLUMN analysis_due INTEGER NOT NULL DEFAULT 0");
       if (!columns.has("history")) this.db.exec("ALTER TABLE reviews ADD COLUMN history TEXT NOT NULL DEFAULT '[]'");
+      this.db.exec("CREATE INDEX IF NOT EXISTS queued_analysis ON reviews (analysis_due, created_at) WHERE status='queued'");
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -99,15 +104,37 @@ export class Store {
     return this.db.prepare(`SELECT ${fields} FROM reviews ORDER BY created_at DESC, id DESC LIMIT 100`).all().map(readable);
   }
 
-  claimAnalysis(id: string) {
+  nextAnalysis(repositories: string[]): Review | undefined {
+    const now = Date.now();
+    const allowed = JSON.stringify(repositories);
+    this.db.prepare(`
+      UPDATE reviews SET analysis_token=NULL, analysis_until=0, analysis_due=-1, analysis_error='analysis_lease_exhausted',
+        history=${history}
+      WHERE status='queued' AND analysis_attempts>=? AND analysis_token IS NOT NULL AND analysis_until<=?
+        AND repo IN (SELECT value FROM json_each(?))
+    `).run("Analysis lease exhausted", new Date(now).toISOString(), maxAutoAttempts, now, allowed);
+    const row = this.db.prepare(`
+      SELECT ${fields} FROM reviews
+      WHERE status='queued' AND analysis_attempts < ? AND analysis_due BETWEEN 0 AND ?
+        AND analysis_until <= ? AND repo IN (SELECT value FROM json_each(?))
+      ORDER BY created_at, id LIMIT 1
+    `).get(maxAutoAttempts, now, now, allowed);
+    return row ? readable(row) : undefined;
+  }
+
+  claimAnalysis(id: string, automatic: boolean) {
     const token = randomUUID();
     const now = Date.now();
-    const updated = this.db.prepare(`
-      UPDATE reviews SET analysis_token = ?, analysis_until = ?, analysis_error = NULL, history = ${history}
-      WHERE id = ? AND status = 'queued' AND analysis_until <= ?
-    `).run(token, now + 45_000, "Analysis started", new Date(now).toISOString(), id, now);
-    if (!updated.changes) throw new AppError(409, "analysis_in_progress");
-    return token;
+    const claim = this.db.prepare(`
+      UPDATE reviews SET analysis_token = ?, analysis_until = ?, analysis_error = NULL,
+        analysis_attempts = analysis_attempts + 1, analysis_due = 0, history = ${history}
+      WHERE id = ? AND status = 'queued' AND analysis_until <= ? AND analysis_due <= ?
+        AND (? = 0 OR (analysis_due >= 0 AND analysis_attempts < ?))
+      RETURNING analysis_attempts
+    `).get(token, now + 45_000, "Analysis started", new Date(now).toISOString(), id, now, now,
+      Number(automatic), maxAutoAttempts);
+    if (!claim) throw new AppError(409, "analysis_unavailable");
+    return { token, attempt: Number(claim.analysis_attempts) };
   }
 
   saveDraft(id: string, token: string, draft: Draft) {
@@ -119,11 +146,12 @@ export class Store {
     return this.get(id);
   }
 
-  failAnalysis(id: string, token: string, code: string) {
+  failAnalysis(id: string, token: string, code: string, due: number) {
+    const now = Date.now();
     this.db.prepare(`
-      UPDATE reviews SET analysis_token = NULL, analysis_until = 0, analysis_error = ?, history = ${history}
-      WHERE id = ? AND status = 'queued' AND analysis_token = ?
-    `).run(code, "Analysis failed", new Date().toISOString(), id, token);
+      UPDATE reviews SET analysis_token = NULL, analysis_until = 0, analysis_due = ?, analysis_error = ?, history = ${history}
+      WHERE id = ? AND status = 'queued' AND analysis_token = ? AND analysis_until > ?
+    `).run(due, code, due > 0 ? "Analysis retry scheduled" : "Analysis failed", new Date(now).toISOString(), id, token, now);
   }
 
   claimPublication(id: string) {

@@ -66,6 +66,8 @@ export type Review = Pull & {
   approved_at: string | null;
   analyzing: boolean;
   analysis_error: string | null;
+  analysis_attempts: number;
+  next_analysis_at: string | null;
   history: { event: string; at: string }[];
 };
 

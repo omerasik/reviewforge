@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Review } from "../src/domain.js";
 import { modelAdvisor, supportedSuggestions } from "../src/review.js";
+import { Store } from "../src/store.js";
 import { fixture, read, sha } from "../scripts/fixture.js";
 
 test("rejects unauthorized deliveries and deduplicates by delivery and head commit", async t => {
@@ -69,6 +70,7 @@ test("prevents stale-head publication and surfaces GitHub retry timing", async t
   assert.equal(rate.headers.get("retry-after"), "21");
   assert.equal((await read<Review>(demo.operatorCall("/" + next.id))).status, "queued");
   assert.equal((await read<Review>(demo.operatorCall("/" + next.id))).analysis_error, "github_rate_limited");
+  assert.equal((await demo.operatorCall("/" + next.id + "/analyze", null)).status, 429);
 });
 
 test("an ambiguous publication is reconciled without a second GitHub write", async t => {
@@ -122,4 +124,49 @@ test("checks structured review model findings against a synthetic diff with a kn
     }) } }] });
   });
   assert.deepEqual(supportedSuggestions(inputs, await advise(inputs)), [known]);
+});
+
+test("automatically analyzes a queued webhook, honors backoff and waits for publication approval", async t => {
+  const demo = await fixture({ autoAnalyze: true, transientFailure: true });
+  t.after(() => demo.close());
+  const { id } = await read<{ id: string }>(demo.webhook());
+  let review = await read<Review>(demo.operatorCall("/" + id));
+  for (let attempt = 0; review.analysis_error === null && attempt < 100; attempt++) {
+    await delay(20);
+    review = await read<Review>(demo.operatorCall("/" + id));
+  }
+  assert.equal(review.analysis_error, "github_rate_limited");
+  assert.equal(review.analysis_attempts, 1);
+  assert.ok(review.next_analysis_at);
+  assert.equal(demo.filesRequests(), 1);
+  for (let attempt = 0; review.status !== "ready" && attempt < 200; attempt++) {
+    await delay(25);
+    review = await read<Review>(demo.operatorCall("/" + id));
+  }
+  assert.equal(review.status, "ready");
+  assert.equal(review.analysis_attempts, 2);
+  assert.equal(review.next_analysis_at, null);
+  assert.equal(review.draft?.checks.length, 2);
+  assert.equal(demo.posts.length, 0);
+  assert.equal((await demo.operatorCall("/" + id + "/publish", { approve: true, sha })).status, 200);
+  assert.equal(demo.posts.length, 1);
+});
+
+test("reclaims expired analysis leases, stops automatically at the cap and permits operator retry", t => {
+  let now = Date.parse("2026-11-17T13:00:00Z");
+  t.mock.method(Date, "now", () => now);
+  const store = new Store();
+  t.after(() => store.close());
+  const repo = "example/project";
+  const { id } = store.enqueue(randomUUID(), "event-digest", { repo, number: 16, sha });
+  assert.equal(store.nextAnalysis(["other/project"]), undefined);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    assert.equal(store.nextAnalysis([repo])?.id, id);
+    assert.equal(store.claimAnalysis(id, true).attempt, attempt);
+    assert.equal(store.nextAnalysis([repo]), undefined);
+    now += 46_000;
+  }
+  assert.equal(store.nextAnalysis([repo]), undefined);
+  assert.equal(store.get(id).analysis_error, "analysis_lease_exhausted");
+  assert.equal(store.claimAnalysis(id, false).attempt, 4);
 });

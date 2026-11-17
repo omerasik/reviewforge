@@ -4,11 +4,12 @@ import { createServer } from "node:http";
 import type { IncomingMessage } from "node:http";
 import { join } from "node:path";
 import { z } from "zod";
+import { analyze } from "./analysis.js";
 import { AppError, head, webhook } from "./domain.js";
 import type { Review, Rules } from "./domain.js";
 import { GitHub, GitHubError } from "./github.js";
 import { rawBody, secureMatch, value } from "./io.js";
-import { ensureCurrent, marker, prepare, render } from "./review.js";
+import { ensureCurrent, marker, render } from "./review.js";
 import type { Advises } from "./review.js";
 import type { Store } from "./store.js";
 
@@ -94,15 +95,7 @@ export function service(config: Setup) {
 
     if (method === "GET" && !operation) return { status: 200, body: review };
     if (method === "POST" && operation === "analyze") {
-      if (review.status !== "queued") return { status: 200, body: review };
-      const lease = store.claimAnalysis(review.id);
-      try {
-        const draft = await prepare(github, review, rules, config.advise);
-        return { status: 200, body: store.saveDraft(review.id, lease, draft) };
-      } catch (error) {
-        store.failAnalysis(review.id, lease, error instanceof AppError ? error.code : "analysis_error");
-        throw error;
-      }
+      return { status: 200, body: await analyze(config, review, rules) };
     }
     if (method === "POST" && operation === "publish") return { status: 200, body: await publish(review, request) };
     if (method === "POST" && operation === "reconcile") {
