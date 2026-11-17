@@ -17,8 +17,9 @@ function modelInputs(files: File[], rules: Rules): Candidate[] {
   const inputs: Candidate[] = [];
   let remaining = 14_000;
   for (const file of files) {
-    if (!file.patch || rules.excludeModelPrefixes.some(prefix => file.filename.startsWith(prefix))
-      || /(^|\/)\.env(?:\.|$)|\.(?:pem|key)$|(^|\/)secrets?\//i.test(file.filename)) continue;
+    const names = [file.filename, ...(file.previous_filename ? [file.previous_filename] : [])];
+    if (!file.patch || names.some(name => rules.excludeModelPrefixes.some(prefix => name.startsWith(prefix))
+      || /(^|\/)\.env(?:\.|$)|\.(?:pem|key)$|(^|\/)secrets?\//i.test(name))) continue;
     const patch = file.patch.slice(0, Math.min(2500, remaining));
     if (!patch) break;
     const complete = patch.length < file.patch.length ? patch.slice(0, Math.max(0, patch.lastIndexOf("\n"))) : patch;
@@ -48,7 +49,6 @@ export function supportedSuggestions(inputs: Candidate[], findings: Suggestion[]
   return findings.filter(item => {
     const patch = candidates.get(item.file);
     if (!patch) return false;
-    if (item.line === undefined && item.evidence === undefined) return true;
     return item.line !== undefined && item.evidence !== undefined && supportedLine(patch, item.line, item.evidence);
   });
 }
@@ -58,13 +58,18 @@ export async function prepare(github: GitHub, pull: Pull, rules: Rules, advise?:
   const [files, checks] = await Promise.all([github.files(pull, rules.maxFiles), github.checkRuns(pull)]);
   await ensureCurrent(github, pull);
   const findings: string[] = [];
-  const governing = files.filter(file => rules.criticalPrefixes.some(prefix => file.filename.startsWith(prefix)));
+  const governing = files.filter(file => rules.criticalPrefixes.some(prefix => file.filename.startsWith(prefix)
+    || file.previous_filename?.startsWith(prefix)));
   if (governing.length) findings.push("Changes touch " + governing.length +
     (governing.length === 1 ? " configured critical path." : " configured critical paths."));
   const lines = files.reduce((sum, file) => sum + file.additions + file.deletions, 0);
   if (lines >= rules.largeChange) findings.push("The inspected changes exceeded the configured line threshold.");
   const bounded = current.changed_files > files.length || checks.total_count > checks.check_runs.length;
   if (bounded) findings.push("File or check results were limited by the review budget.");
+  const failedChecks = checks.check_runs.some(check =>
+    ["failure", "timed_out", "startup_failure", "action_required"].includes(check.conclusion ?? ""));
+  const incompleteChecks = !checks.total_count || checks.check_runs.some(check =>
+    check.status !== "completed" || check.conclusion === null);
 
   let model: Draft["model"] = "disabled";
   let suggestions: Suggestion[] = [];
@@ -78,7 +83,7 @@ export async function prepare(github: GitHub, pull: Pull, rules: Rules, advise?:
     }
   }
   return {
-    risk: governing.length ? "high" : findings.length ? "medium" : "low",
+    risk: governing.length || failedChecks ? "high" : findings.length || incompleteChecks ? "medium" : "low",
     scopes: { files: current.changed_files, checks: checks.total_count, bounded },
     rules: findings,
     files: files.map(({ filename, status, additions, deletions }) => ({ filename, status, additions, deletions })),

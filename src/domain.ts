@@ -21,6 +21,7 @@ export const webhook = z.object({
 
 export const fileSchema = z.object({
   filename: z.string().min(1).max(1000),
+  previous_filename: z.string().min(1).max(1000).optional(),
   status: z.string().max(30),
   additions: z.number().int().nonnegative(),
   deletions: z.number().int().nonnegative(),

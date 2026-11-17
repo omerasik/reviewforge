@@ -2,6 +2,8 @@
 
 ReviewForge drafts pull request reviews from changed files, repository rules and GitHub checks. The React dashboard shows draft evidence and review history. An operator can approve publication for the exact commit reviewed.
 
+![Review dashboard after explicitly approved synthetic publication](docs/dashboard.png)
+
 ## Quick start
 
 Use Node.js 22.14+ and npm.
@@ -31,6 +33,8 @@ The default listener binds to `127.0.0.1:3040` and stores the review ledger unde
 
 The deployed server analyzes queued pull requests automatically. SQLite stores the lease, attempt count and next eligible time. Transient GitHub errors use bounded exponential backoff and respect `Retry-After`. After three automatic attempts, an operator can retry from the dashboard when eligible. Set `AUTO_ANALYZE=false` for operator-triggered analysis.
 
+For a read-only integration check against your authorized test repository, set a restricted `GITHUB_TOKEN` and run `npm run verify:github -- --repo owner/repository --pr 123`. `--git-credentials` optionally uses existing Git authentication in memory. This command blocks HTTP writes, makes no model calls, and prints counts and the examined SHA without diffs or credentials. It requires an open PR. Live publication still requires explicit approval through the application.
+
 ## REST operations
 
 | Route | Use |
@@ -57,6 +61,8 @@ npm run build
 npm audit --audit-level=moderate
 ```
 
-HTTP integration tests use a GitHub fixture. They cover signatures, authorization, delivery deduplication, automatic analysis and rate-limit recovery, stale heads, concurrent analysis and approval, and recovery after a dropped publication response. The model adapter checks structured findings against the examined line in the bounded diff. A synthetic case checks the filter using one correct and two unsupported suggestions. It measures evidence-filter behavior with a mocked model. This version uses one operator role and a SQLite ledger. The hosted webhook, real review publication and paid model require authorized configurations.
+HTTP integration tests use a GitHub fixture. They cover signatures, authorization, delivery deduplication, automatic analysis and rate-limit recovery, stale heads, concurrent analysis and approval, and recovery after a dropped publication response. Database reopen tests verify lease fencing and interrupted publication recovery. Model findings require a matching line and evidence in the examined diff. Secret-file exclusions inspect both current and previous paths for renames. Failed GitHub checks raise risk to high; absent or pending check evidence raises it to at least medium. Policy findings, check results and model suggestions stay separate in the draft.
+
+Frontend builds use esbuild; Oxlint and strict TypeScript checks run separately. This removes the unpatched picomatch dependency chain from development tooling. CI also builds and starts the container with unused mock integration credentials, checks the dashboard assets, CSP and authorization, and makes no external GitHub writes. This version uses one operator role and a SQLite ledger. The hosted webhook, real review publication and paid model require authorized configurations.
 
 Original work includes the signed delivery ledger, repo-level policy, evidence and proposal format, commit-scoped approval and publication recovery. [Third-party notices](THIRD_PARTY_NOTICES.md) · [MIT license](LICENSE).

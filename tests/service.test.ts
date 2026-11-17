@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
-import type { Review } from "../src/domain.js";
-import { modelAdvisor, supportedSuggestions } from "../src/review.js";
+import type { Draft, Review } from "../src/domain.js";
+import { GitHub } from "../src/github.js";
+import { modelAdvisor, prepare, supportedSuggestions } from "../src/review.js";
 import { Store } from "../src/store.js";
 import { fixture, read, sha } from "../scripts/fixture.js";
 
@@ -124,6 +128,60 @@ test("checks structured review model findings against a synthetic diff with a kn
     }) } }] });
   });
   assert.deepEqual(supportedSuggestions(inputs, await advise(inputs)), [known]);
+  assert.deepEqual(supportedSuggestions(inputs, [{ file: known.file, severity: "high", message: "No evidence" }]), []);
+});
+
+test("excludes renamed secrets from model input and classifies failed checks as high risk", async () => {
+  const patch = "@@ -1 +1 @@\n-old\n+new";
+  const github = new GitHub("fixture-only", async input => {
+    const url = String(input);
+    if (url.includes("/files?")) return Response.json([
+      { filename: "notes.txt", previous_filename: ".env.production", status: "renamed", additions: 1, deletions: 1, patch },
+      { filename: "src/normal.ts", status: "modified", additions: 1, deletions: 1, patch }
+    ]);
+    if (url.includes("/check-runs?")) return Response.json({ total_count: 1,
+      check_runs: [{ name: "tests", status: "completed", conclusion: "failure" }] });
+    return Response.json({ state: "open", head: { sha }, changed_files: 2 });
+  });
+  const draft = await prepare(github, { repo: "example/project", number: 16, sha }, {
+    maxFiles: 10, largeChange: 200, criticalPrefixes: [], excludeModelPrefixes: []
+  }, async candidates => {
+    assert.deepEqual(candidates.map(candidate => candidate.file), ["src/normal.ts"]);
+    return [];
+  });
+  assert.equal(draft.risk, "high");
+  assert.deepEqual(draft.rules, []);
+  assert.equal(draft.checks[0]?.conclusion, "failure");
+});
+
+test("persists analysis fencing and interrupted publication across database reopen", async t => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const directory = await mkdtemp(join(tmpdir(), "reviewforge-recovery-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, "reviews.db");
+  const first = new Store(path);
+  const { id } = first.enqueue(randomUUID(), "digest", { repo: "example/project", number: 16, sha });
+  const old = first.claimAnalysis(id, true);
+  first.close();
+  const next = new Store(path);
+  try {
+    assert.throws(() => next.claimAnalysis(id, true), /analysis_unavailable/);
+    now += 46_000;
+    const replacement = next.claimAnalysis(id, true);
+    const draft: Draft = { risk: "low", scopes: { files: 0, checks: 0, bounded: false },
+      rules: [], files: [], checks: [], suggestions: [], model: "disabled" };
+    assert.throws(() => next.saveDraft(id, old.token, draft), /analysis_lease_expired/);
+    next.saveDraft(id, replacement.token, draft);
+    assert.equal(next.claimPublication(id), true);
+  } finally { next.close(); }
+  const reopened = new Store(path);
+  try {
+    assert.equal(reopened.get(id).status, "publishing");
+    assert.equal(reopened.claimPublication(id), false);
+    assert.equal(reopened.finish(id, 828).status, "published");
+    assert.equal(reopened.get(id).history.filter(entry => entry.event === "Publication approved").length, 1);
+  } finally { reopened.close(); }
 });
 
 test("automatically analyzes a queued webhook, honors backoff and waits for publication approval", async t => {
