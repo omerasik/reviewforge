@@ -14,7 +14,7 @@ p, small { color: #53627c; line-height: 1.5; }
 .top { display: flex; align-items: center; gap: 18px; padding: 14px max(20px, calc((100% - 1220px)/2)); color: #e5eaff; background: #202c49; }
 .brand { font-size: 19px; font-weight: 750; }
 .top span { color: #b8c5e1; font-size: 13px; }
-.top button { margin-left: auto; }
+.top button { margin-left: auto; color: #202c49; }
 main { max-width: 1260px; padding: 34px 20px; margin: auto; }
 .heading, .detail-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .heading { margin-bottom: 22px; }
@@ -35,7 +35,7 @@ label { display: grid; gap: 7px; font-weight: 650; font-size: 13px; }
 .primary { background: #354bb8; color: #fff; border-color: #354bb8; }
 .sha { display: block; font-size: 12px; overflow-wrap: anywhere; }
 .error, .notice { margin-bottom: 10px; background: #fff1f2; color: #822c38; border-radius: 6px; padding: 8px 12px; }
-.notice { background: #e9effe; color: #32477e; }
+.notice { display: block; background: #e9effe; color: #32477e; }
 .summary { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; }
 .evidence { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
 .evidence section, .findings, .approval { padding: 12px; border: 1px solid #dce3ef; border-radius: 8px; overflow-wrap: anywhere; }

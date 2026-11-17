@@ -122,7 +122,7 @@ function App() {
     <div className="heading"><div><h1>Review queue</h1><p>Inspect incoming pull requests and approve a review for the commit you examined.</p></div>
       {token && <button disabled={!!busy} onClick={() => void run("Refreshing", () => refresh(token))}>Refresh</button>}</div>
     {error && <p className="error" role="alert">{error}</p>}
-    {busy && <p role="status" className="notice">{busy}…</p>}
+    {busy && <output className="notice">{busy}…</output>}
     {!token ? <form className="panel login" onSubmit={signIn}>
       <h2>Operator access</h2><label>Operator token<input type="password" autoComplete="off" required value={credential}
         onChange={event => setCredential(event.target.value)} /></label>
